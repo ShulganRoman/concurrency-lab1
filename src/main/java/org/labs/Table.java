@@ -1,128 +1,91 @@
 package org.labs;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Condition;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 public class Table {
-    private final int dishes;
-    private final int programmers;
+    private final AtomicInteger dishes;
+
     private final List<Spoon> spoons;
-    private final Lock lock = new ReentrantLock();
-    private final Condition spoonsAvailable = lock.newCondition();
     private final List<Programmer> programmerList;
-    private final List<Thread> programmerThreads;
-    private final ThreadPoolExecutor waiterPoolExecutor;
 
-    public Table(int programmers, int waiters, int dishes, Runnable r) throws IllegalArgumentException {
-        this.dishes = dishes;
-        this.programmers = programmers;
+    private final ExecutorService tp_p;
+    private final ExecutorService tp_w;
 
-        if (programmers < 2 || waiters < 1)
+    private final Lock lock = new ReentrantLock();
+
+    private final int waiters;
+
+    public Table(int programmers, int waiters, int dishes) throws IllegalArgumentException {
+        if (programmers < 2 || waiters < 1 || dishes < 0)
             throw new IllegalArgumentException();
 
-        if (programmers < waiters) waiters = programmers;
+        this.waiters = Math.min(waiters, programmers);
 
-        waiterPoolExecutor = new ThreadPoolExecutor(
-                waiters, waiters,
-                100, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>(dishes));
+        this.dishes = new AtomicInteger(dishes);
 
-        spoons = Stream
-                .generate(Spoon::new)
-                .limit(programmers)
-                .collect(Collectors.toCollection(ArrayList::new));
-
-        programmerList = IntStream
-                .range(0, programmers)
-                .mapToObj(i -> new Programmer(r))
-                .limit(programmers)
+        this.spoons = IntStream.range(0, programmers)
+                .mapToObj(_ -> new Spoon())
                 .toList();
 
-        programmerThreads = IntStream
-                .range(0, programmers)
-                .mapToObj(i -> new Thread(programmerList.get(i), "" + i))
+        this.programmerList = IntStream.range(0, programmers)
+                .mapToObj(_ -> new Programmer())
                 .toList();
+
+        tp_w = Executors.newFixedThreadPool(this.waiters);
+        tp_p = Executors.newFixedThreadPool(programmers);
     }
 
-    public Table(int programmers, int waiters, int dishes) {
-        this(programmers, waiters, dishes, () -> {});
-    }
+    public void startEating() {
+        for (int i = 0; i < waiters; i++) {
+            tp_w.execute(() -> {
+                int n = programmerList.size();
+                int j = 0;
 
-    public void run() {
-        programmerThreads.forEach(Thread::start);
+                while (true) {
+                    if (dishes.getAndUpdate(d -> d > 0 ? d - 1 : 0) == 0) return;
 
-        for (int i = 0; i < dishes; i++) {
-            waiterPoolExecutor.execute(() -> {
-                lock.lock();
-                int n = getStarve();
-                Programmer p = programmerList.get(n);
-                p.setHasWaiter(true);
-                lock.unlock();
+                    while (true) {
+                        int idx = j;
+                        Spoon left = spoons.get(idx);
+                        Spoon right = spoons.get((idx + 1) % n);
+                        j = (j + 1) % n;
 
-                Spoon leftSpoon = spoons.get(n);
-                Spoon rightSpoon = spoons.get((n + 1) % programmers);
+                        if (tryTake(left, right)) {
+                            Programmer p = programmerList.get(idx);
 
-                lock.lock();
-                try {
-                    while (!(leftSpoon.isOnTable() && rightSpoon.isOnTable())) {
-                        try {
-                            spoonsAvailable.await();
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            p.setHasWaiter(false);
-                            return;
+                            tp_p.execute(() -> {
+                                try {
+                                    p.run();
+                                } finally {
+                                    release(left, right);
+                                }
+                            });
+
+                            break;
                         }
+
+                        Thread.onSpinWait();
                     }
-                    leftSpoon.pickMe();
-                    rightSpoon.pickMe();
-                } finally {
-                    lock.unlock();
                 }
-
-                p.eat();
-                try {
-                    p.awaitDone();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-
-                lock.lock();
-                try {
-                    leftSpoon.putMeBack();
-                    rightSpoon.putMeBack();
-                    spoonsAvailable.signalAll();
-                } finally {
-                    lock.unlock();
-                }
-
-                p.setHasWaiter(false);
             });
         }
 
-        waiterPoolExecutor.shutdown();
         try {
-            waiterPoolExecutor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+            tp_w.shutdown();
+            var _ = tp_w.awaitTermination(1, TimeUnit.HOURS);
+            tp_p.shutdown();
+            var _ = tp_p.awaitTermination(1, TimeUnit.HOURS);
         } catch (InterruptedException e) {
+            tp_w.shutdownNow();
+            tp_p.shutdownNow();
             Thread.currentThread().interrupt();
-        }
-
-        for (var p : programmerList) p.stop();
-
-        for (var t : programmerThreads) {
-            try {
-                t.join();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
         }
     }
 
@@ -130,20 +93,31 @@ public class Table {
         return programmerList;
     }
 
-    private int getStarve() {
-        int result = 0;
-        int min = Integer.MAX_VALUE;
+    private boolean tryTake(Spoon left, Spoon right) {
+        lock.lock();
 
-        for (int i = 0; i < programmerList.size(); i++) {
-            if (programmerList.get(i).getHasWaiter().get()) continue;
+        try {
+            if (left.isOnTable() && right.isOnTable()) {
+                left.pickMe();
+                right.pickMe();
 
-            int temp = programmerList.get(i).getEaten().get();
-            if (temp < min) {
-                min = temp;
-                result = i;
+                return true;
             }
-        }
 
-        return result;
+            return false;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void release(Spoon left, Spoon right) {
+        lock.lock();
+
+        try {
+            left.putMeBack();
+            right.putMeBack();
+        } finally {
+            lock.unlock();
+        }
     }
 }

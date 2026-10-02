@@ -4,7 +4,7 @@ import java.io.IOException;
 import java.util.Properties;
 
 public class Main {
-    public static void main(String[] args) {
+    static void main() {
         int programmers = 0;
         int waiters = 0;
         int dishes = 0;
@@ -20,17 +20,16 @@ public class Main {
         }
 
         if (programmers < 2 || waiters < 1 || dishes < 1) {
-            System.err.println("Некорректная конфигурация: programmers=" + programmers
-                    + ", waiters=" + waiters + ", dishes=" + dishes);
+            System.err.println("Некорректная конфигурация: programmers=" + programmers + ", waiters=" + waiters + ", dishes=" + dishes);
             System.exit(1);
         }
 
         Table table = new Table(programmers, waiters, dishes);
-        table.run();
+        table.startEating();
 
-        for(var p : table.getInfo())
+        for (var p : table.getInfo())
             System.out.println(p.getEaten());
 
-        System.out.println("total: " + table.getInfo().stream().mapToInt(i -> i.getEaten().get()).sum() + " dishes eaten");
+        System.out.println("total: " + table.getInfo().stream().mapToInt(Programmer::getEaten).sum() + " dishes eaten");
     }
 }
