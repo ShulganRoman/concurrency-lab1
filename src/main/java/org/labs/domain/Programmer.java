@@ -1,93 +1,86 @@
 package org.labs.domain;
 
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.Lock;
 
 public class Programmer implements Runnable {
-    private final AtomicInteger eaten = new AtomicInteger();
+    private int eaten = 0;
     private final Spoon leftSpoon, rightSpoon;
-    private final Lock lock;
-    private final Condition condition;
-    private final Condition spoonsReleased;
+    private final Semaphore eatRequests = new Semaphore(0);
+    private final AtomicInteger pickCount = new AtomicInteger(0);
 
-    private boolean hasSpoons = false;
-    private boolean stopped = false;
-    private int served = 0;
+    private volatile boolean stopped = false;
 
-    Programmer(Spoon leftSpoon, Spoon rightSpoon, Lock lock, Condition spoonsReleased) {
+    Programmer(Spoon leftSpoon, Spoon rightSpoon) {
         this.leftSpoon = leftSpoon;
         this.rightSpoon = rightSpoon;
-        this.lock = lock;
-        this.spoonsReleased = spoonsReleased;
+    }
 
-        this.condition = lock.newCondition();
+    public void stop() {
+        stopped = true;
+        eatRequests.release();
+    }
+
+    public int getPickCount() {
+        return pickCount.get();
+    }
+
+    public Programmer pick() {
+        pickCount.incrementAndGet();
+        return this;
     }
 
     public int getEaten() {
-        return eaten.get();
+        return eaten;
+    }
+
+    public void startEating() {
+        eatRequests.release();
     }
 
     @Override
     public void run() {
         while (true) {
-            lock.lock();
-
             try {
-                while (!hasSpoons && !stopped)
-                    condition.await();
+                eatRequests.acquire();
+                if (stopped && eatRequests.availablePermits() == 0) return;
 
-                if (!hasSpoons) return;
+                eat();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
-            } finally {
-                lock.unlock();
             }
-
-            eaten.incrementAndGet();
-
-            releaseSpoons();
         }
     }
 
-    public void stop() {
-        lock.lock();
+    private void eat() throws InterruptedException {
+        Spoon first = leftSpoon.getId() < rightSpoon.getId() ? leftSpoon : rightSpoon;
+        Spoon second = first == leftSpoon ? rightSpoon : leftSpoon;
 
+        first.getLock().lock();
+        second.getLock().lock();
+
+        boolean tookFirst = false;
+        boolean tookSecond = false;
         try {
-            stopped = true;
-            condition.signal();
+            while (!(tookFirst = first.tryTakeSpoon()))
+                first.getCondition().await();
+
+            while (!(tookSecond = second.tryTakeSpoon()))
+                second.getCondition().await();
+
+            eaten++;
         } finally {
-            lock.unlock();
+            if (tookFirst) releaseSpoon(first);
+            if (tookSecond) releaseSpoon(second);
+
+            first.getLock().unlock();
+            second.getLock().unlock();
         }
     }
 
-    int getServed() {
-        return served;
-    }
-
-    boolean canEat() {
-        return !hasSpoons && leftSpoon.isOnTable() && rightSpoon.isOnTable();
-    }
-
-    void giveSpoons() {
-        leftSpoon.takeSpoon();
-        rightSpoon.takeSpoon();
-        hasSpoons = true;
-        served++;
-        condition.signal();
-    }
-
-    private void releaseSpoons() {
-        lock.lock();
-
-        try {
-            leftSpoon.putSpoon();
-            rightSpoon.putSpoon();
-            hasSpoons = false;
-            spoonsReleased.signalAll();
-        } finally {
-            lock.unlock();
-        }
+    private void releaseSpoon(Spoon spoon) {
+        spoon.putSpoon();
+        spoon.getCondition().signal();
     }
 }

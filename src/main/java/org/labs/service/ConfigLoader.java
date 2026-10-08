@@ -1,4 +1,4 @@
-package org.labs;
+package org.labs.service;
 
 import java.io.IOException;
 import java.io.InputStream;

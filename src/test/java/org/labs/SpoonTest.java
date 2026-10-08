@@ -14,26 +14,18 @@ class SpoonTest {
     void newSpoonIsOnTable() {
         Spoon spoon = new Spoon();
 
-        assertTrue(spoon.isOnTable());
+        assertFalse(spoon.getInUse());
     }
 
     @Test
     void takeSpoonAndPutSpoonToggleState() {
         Spoon spoon = new Spoon();
 
-        spoon.takeSpoon();
-        assertFalse(spoon.isOnTable());
+        spoon.tryTakeSpoon();
+        assertTrue(spoon.getInUse());
 
         spoon.putSpoon();
-        assertTrue(spoon.isOnTable());
-    }
-
-    @Test
-    void takingTakenSpoonFails() {
-        Spoon spoon = new Spoon();
-        spoon.takeSpoon();
-
-        assertThrows(IllegalStateOfSpoonException.class, spoon::takeSpoon);
+        assertFalse(spoon.getInUse());
     }
 
     @Test

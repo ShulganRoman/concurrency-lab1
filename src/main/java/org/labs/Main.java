@@ -2,6 +2,7 @@ package org.labs;
 
 import org.labs.domain.Programmer;
 import org.labs.domain.Table;
+import org.labs.service.ConfigLoader;
 
 import java.io.IOException;
 import java.util.Properties;

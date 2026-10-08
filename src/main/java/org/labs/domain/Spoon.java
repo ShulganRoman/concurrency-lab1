@@ -1,23 +1,41 @@
 package org.labs.domain;
 
-public class Spoon {
-    private boolean onTable = true;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
-    public boolean isOnTable() {
-        return onTable;
+public class Spoon {
+    private static final AtomicInteger NEXT_ID = new AtomicInteger(0);
+
+    private final int id = NEXT_ID.getAndIncrement();
+    private final AtomicBoolean inUse = new AtomicBoolean(false);
+    private final Lock lock = new ReentrantLock();
+    private final Condition condition = lock.newCondition();
+
+    public int getId() {
+        return id;
     }
 
-    public void takeSpoon() {
-        if (!onTable)
-            throw new IllegalStateOfSpoonException();
+    public boolean getInUse() {
+        return inUse.get();
+    }
 
-        onTable = false;
+    public boolean tryTakeSpoon() {
+        return !inUse.getAndSet(true);
     }
 
     public void putSpoon() {
-        if (onTable)
+        if (!inUse.getAndSet(false))
             throw new IllegalStateOfSpoonException();
+    }
 
-        onTable = true;
+    public Condition getCondition() {
+        return condition;
+    }
+
+    public Lock getLock() {
+        return lock;
     }
 }
